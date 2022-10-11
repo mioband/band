@@ -21,17 +21,17 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define TEST_CELL 5
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MEAS_VALUES 16
+#define MEAS_VALUES   8 // must be the power of 2!
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,13 +48,17 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 /* For filter */
+uint8_t filter_shift = log2(MEAS_VALUES);
 uint16_t adc_prev[6][MEAS_VALUES];
 uint16_t adc_sum[6];
 volatile uint8_t count_adc = 0;
 
-volatile uint16_t adc_array[7] = {0xFFFF,};
+uint16_t cycle_delay = 50; // in ms
+volatile uint16_t adc_array[6] = {0,};
 volatile uint8_t uart_flag = 0;
 uint8_t uart_buff[10];
+volatile uint8_t inf_mode = 0;
+volatile uint8_t sended_flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,75 +68,15 @@ static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void potentiometer_set_int_value(uint8_t addr, uint8_t int_value);
+void measuring(void);
+void uart_handler(void);
+void transmit_signals_to_esp32(void);
+void measure_and_send_once(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void potentiometer_set_value(uint8_t addr, float coefficient) {
-	HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, 0);
-
-	if (addr < 6) HAL_SPI_Transmit(&hspi1, &addr, 1, 100);
-
-	if (coefficient >= 0 && coefficient <= 1) {
-		uint8_t tmp_val = 255 * coefficient;
-		HAL_SPI_Transmit(&hspi1, &tmp_val, 1, 100);
-	}
-
-	HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, 1);
-}
-
-
-void potentiometer_set_int_value(uint8_t addr, uint8_t int_value) {
-	HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, 0);
-
-	if (addr < 6) HAL_SPI_Transmit(&hspi1, &addr, 1, 100);
-
-	if (int_value >= 0 && int_value <= 255) {
-		HAL_SPI_Transmit(&hspi1, &int_value, 1, 100);
-	}
-
-	HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, 1);
-}
-
-
-void measuring(void) {
-	if (++count_adc >= MEAS_VALUES) count_adc = 0;
-
-	for (uint8_t i = 1; i < 7; i++) {
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1, 100);
-		adc_array[i] = HAL_ADC_GetValue(&hadc1);
-
-		adc_sum[i-1] -= adc_prev[i-1][count_adc];
-		adc_sum[i-1] += adc_array[i];
-		adc_prev[i-1][count_adc] = adc_array[i];
-		adc_array[i] = adc_sum[i-1] >> 4;
-	}
-}
-
-
-void measuring_with_certain_time(uint32_t time_of_working) {
-	uint32_t tickstart = HAL_GetTick();
-	uint32_t wait = time_of_working;
-
-	if (wait < HAL_MAX_DELAY) {
-		wait += (uint32_t) (uwTickFreq);
-	}
-
-	while ((HAL_GetTick() - tickstart) < wait) {
-		measuring();
-//		HAL_UART_Transmit(&huart1, (uint8_t *) &adc_array[TEST_CELL], sizeof(adc_array[TEST_CELL]), 100);
-		HAL_UART_Transmit(&huart1, (uint8_t *) adc_array, sizeof(adc_array), 100);
-	}
-}
-
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart == &huart1) {
-		uart_flag = 1;
-	}
-}
 /* USER CODE END 0 */
 
 /**
@@ -172,36 +116,17 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  /*for (uint8_t a = 0; a <= 5; a++) {
-	  potentiometer_set_value(a, 1);
-	  HAL_Delay(100);
-  }*/
   HAL_UART_Receive_IT(&huart1, (uint8_t *) uart_buff, 2);
   while (1) {
-	  if (uart_flag) {
-		  uart_flag = 0;
-		  potentiometer_set_int_value(uart_buff[0], uart_buff[1]);
-		  HAL_UART_Receive_IT(&huart1, (uint8_t *) uart_buff, 2);
+	  uart_handler();
+	  if (inf_mode) {
+		  while (1) {
+			  uart_handler();
+			  measuring();
+			  transmit_signals_to_esp32();
+			  HAL_Delay(cycle_delay);
+		  }
 	  }
-
-	  measuring();
-	  uint8_t tmp_arr[13] = {
-			  'S',
-			  adc_array[1],
-			  adc_array[1] >> 8,
-			  adc_array[2],
-			  adc_array[2] >>8,
-			  adc_array[3],
-			  adc_array[3] >> 8,
-			  adc_array[4],
-			  adc_array[4] >> 8,
-			  adc_array[5],
-			  adc_array[5] >> 8,
-			  adc_array[6],
-			  adc_array[6] >> 8,
-	  };
-	  HAL_UART_Transmit(&huart1, (uint8_t *) tmp_arr, sizeof(tmp_arr), 100);
-	  HAL_Delay(80);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -434,7 +359,117 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart == &huart1) {
+		uart_flag = 1;
+	}
+}
 
+
+void potentiometer_set_int_value(uint8_t addr, uint8_t int_value) {
+	HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, 0);
+
+	if (addr < 6) HAL_SPI_Transmit(&hspi1, &addr, 1, 100);
+
+	if (int_value >= 0 && int_value <= 255) {
+		switch (addr) {
+			case 2:
+			case 3:
+			case 4:
+				int_value = 255 - int_value;
+				break;
+		}
+		HAL_SPI_Transmit(&hspi1, &int_value, 1, 100);
+	}
+
+	HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, 1);
+}
+
+
+void measuring(void) {
+	if (++count_adc >= MEAS_VALUES) count_adc = 0;
+
+	for (uint8_t i = 0; i < 6; i++) {
+		HAL_ADC_Start(&hadc1);
+		HAL_ADC_PollForConversion(&hadc1, 100);
+		adc_array[i] = HAL_ADC_GetValue(&hadc1);
+
+		adc_sum[i] -= adc_prev[i][count_adc];
+		adc_sum[i] += adc_array[i];
+		adc_prev[i][count_adc] = adc_array[i];
+		adc_array[i] = adc_sum[i] >> filter_shift;
+	}
+}
+
+
+void uart_handler(void) {
+	if (uart_flag) {
+		uart_flag = 0;
+		switch (uart_buff[0] & 0xF0) { // define command and it's accomplishing
+			case 0xA0: // infinite mode
+				inf_mode = 1;
+				break;
+			case 0xB0: // set value to the certain channel and send measured data once
+				potentiometer_set_int_value((uart_buff[0] & 0x0F), uart_buff[1]);
+				measure_and_send_once();
+				break;
+			case 0xC0: // send measured data once
+				measure_and_send_once();
+				break;
+			case 0xD0: // set delay value (from 0 to 255 ms)
+				cycle_delay = uart_buff[1];
+				break;
+			case 0xE0: // set one value to the all channels and send measured data once
+				for (uint8_t i = 0; i < 6; i++) {
+					switch (i) {
+						case 0:
+						case 1:
+						case 5:
+							potentiometer_set_int_value(i, uart_buff[1]);
+							break;
+						case 2:
+						case 3:
+						case 4:
+							potentiometer_set_int_value(i, 255 - uart_buff[1]);
+							break;
+					}
+				  HAL_Delay(20);
+				}
+
+				measure_and_send_once();
+				break;
+			case 0x00: // set value to the certain channel
+				potentiometer_set_int_value(uart_buff[0], uart_buff[1]);
+				break;
+		}
+		HAL_UART_Receive_IT(&huart1, (uint8_t *) uart_buff, 2);
+	}
+}
+
+
+void transmit_signals_to_esp32(void) {
+	uint8_t tmp_arr[13] = {
+			'S',
+			adc_array[0],
+		    adc_array[0] >> 8,
+		    adc_array[1],
+		    adc_array[1] >>8,
+		    adc_array[2],
+		    adc_array[2] >> 8,
+		    adc_array[3],
+		    adc_array[3] >> 8,
+		    adc_array[4],
+		    adc_array[4] >> 8,
+		    adc_array[5],
+		    adc_array[5] >> 8,
+	};
+	HAL_UART_Transmit(&huart1, (uint8_t *) tmp_arr, sizeof(tmp_arr), 100);
+}
+
+void measure_and_send_once(void) {
+	for (uint8_t i = 0; i < MEAS_VALUES; i++) measuring();
+	transmit_signals_to_esp32();
+}
 /* USER CODE END 4 */
 
 /**
