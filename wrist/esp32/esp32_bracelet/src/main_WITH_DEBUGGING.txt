@@ -22,8 +22,8 @@ unsigned long f_btn_start_time = 0; // for keeping time the start from pressed b
 struct_message myData; // structure for transmitting with esp_now
 charge_state_msg charge = {DEVICE_ID, 0}; // struct with message about battery charge
 esp_now_peer_info_t peerInfo; // peer interface
-uint8_t broadcastAddress_pc[] = {0x30, 0xC6, 0xF7, 0xB0, 0xF6, 0xF4};
-uint8_t broadcastAddress_car[] = {0x30, 0xC6, 0xF7, 0xB0, 0xF6, 0xEC};
+uint8_t broadcastAddress_pc[] = {0xF4, 0x12, 0xFA, 0x43, 0x29, 0x94};
+uint8_t broadcastAddress_car[] = {0x30, 0xAE, 0xA4, 0x13, 0xD5, 0x58};
 uint8_t broadcastAddress_tank[] = {0x30, 0xAE, 0xA4, 0x3B, 0x31, 0xD0};
 /*1 версия приемника: {0x80, 0x7D, 0x3A, 0x99, 0x85, 0x14}
   2 версия приемника (с оригинальным stm): {0x30, 0xc6, 0xf7, 0xb0, 0xf6, 0xf0}
@@ -32,6 +32,7 @@ uint8_t broadcastAddress_tank[] = {0x30, 0xAE, 0xA4, 0x3B, 0x31, 0xD0};
   машинка: {0x30, 0xC6, 0xF7, 0xB0, 0xF6, 0xEC}
   Brown Tank: {0x30, 0xAE, 0xA4, 0x13, 0xD5, 0x58}
   Green Tank: {0x30, 0xAE, 0xA4, 0x3B, 0x31, 0xD0}
+  Отладка Бориса: {0xF4, 0x12, 0xFA, 0x43, 0x29, 0x94}
 */
 
 void setup() {
@@ -235,6 +236,9 @@ static void configuring_signals_levels(void) {
     uint8_t tmp_coeffs[6] = {0,};
     unsigned long strt_tm;
     bool led_tmp = true;
+#ifdef DEBUG_CALIBRATION
+    Serial.println("###### 1st step: Relax the hand ######");
+#endif
     /* indicating */
     for (uint8_t i = 0; i < 6; i++) {
         delay(300);
@@ -252,12 +256,19 @@ static void configuring_signals_levels(void) {
         strt_tm = millis();
         while (!uart_flag && (millis() - strt_tm <= 1000)) get_signals();
         uart_flag = false;
+#ifdef DEBUG_CALIBRATION
+            Serial.print('C'); Serial.println(tmp_val);
+#endif
         /* checking the values */
         for (uint8_t j = 0; j < 6; j++) {
             if ((sensors[j] <= CALIBR_VALUE) && !got_coeff[j]) {
                 got_coeff[j] = true;
                 tmp_coeffs[j] = tmp_val;
             }
+#ifdef DEBUG_CALIBRATION
+            Serial.print('D'); Serial.print(sensors[j]);
+            if (j == 5) Serial.println();
+#endif
         }
         digitalWrite(RX_1_LED, led_tmp);
         led_tmp = (led_tmp) ? false : true;
@@ -270,6 +281,10 @@ static void configuring_signals_levels(void) {
         EEPROM.write(i + 1, tmp_coeffs[i]);
         EEPROM.commit();
         delay(50);
+#ifdef DEBUG_CALIBRATION
+        Serial.print('C'); Serial.print(tmp_coeffs[i]);
+        if (i == 5) Serial.println();
+#endif
     }
 }
 
@@ -286,7 +301,15 @@ static void get_normalization_parameters(void) {
     while (!uart_flag && (millis() - strt_tm <= 1000)) get_signals();
     uart_flag = false;
     for (uint8_t cnt = 0; cnt < 6; cnt++) mins[cnt] = sensors[cnt]; // previous values
-
+#ifdef DEBUG_CALIBRATION
+    Serial.println("###### Signals before gesture ######");
+    for (uint8_t i = 0; i < 6; i++) {
+        Serial.print('D');
+        Serial.print(sensors[i]);
+        if (i == 5) Serial.println();
+    }
+    Serial.println("###### 2nd step: Make the gesture ######");
+#endif
     /* indicating */
     for (uint8_t i = 0; i < 8; i++) {
         delay(100);
@@ -303,13 +326,22 @@ static void get_normalization_parameters(void) {
     strt_tm = millis();
     while (!uart_flag && (millis() - strt_tm < 1000)) get_signals();
     uart_flag = false;
-
+#ifdef DEBUG_CALIBRATION
+    for (uint8_t i = 0; i < 6; i++) {
+        Serial.print('D');
+        Serial.print(sensors[i]);
+        if (i == 5) Serial.println();
+    }
+#endif
     /* new signals values, calculating differencies, 
         write to eeprom obtained values
     */
     uint8_t tmp_cnt = 7;
     uint8_t idxs_sig_pos = 0;
     uint8_t represent_signals = 0;
+#ifdef DEBUG_CALIBRATION
+    Serial.println("###### Chosen signals ######");
+#endif
     for (uint8_t cnt = 0; cnt < 6; cnt++) {
         sensors_idxs[cnt] = 0xFF;
         maxs[cnt] = sensors[cnt];
@@ -338,18 +370,123 @@ static void get_normalization_parameters(void) {
                     represent_signals |= 0x20;
                     break;
             }
+#ifdef DEBUG_CALIBRATION
+            Serial.print('S');
+            Serial.print(cnt);
+#endif
         }
         tmp_cnt += 2;
     }
     EEPROM.write(31, represent_signals);
     EEPROM.commit();
+#ifdef DEBUG_CALIBRATION
+    Serial.println("\n###### Diff btw signals ######");
+    for (uint8_t k = 0; k < 6; k++) {
+        Serial.print('D');
+        Serial.print(diffs[k]);
+        if (k == 5) Serial.println();
+    }
+    Serial.println("###### Threshold values ######");
+    for (uint8_t k = 0; k < 6; k++) {
+        Serial.print('T');
+        if (mins[k] <= maxs[k]) {
+            Serial.print(static_cast<int>((mins[k] + THRESHOLD_VALUE * diffs[k]) * ((represent_signals >> k) & 0x01)));
+        } else {
+            Serial.print(static_cast<int>((maxs[k] + (1 - THRESHOLD_VALUE) * diffs[k]) * ((represent_signals >> k) & 0x01)));
+        }
+        if (k == 5) Serial.println();
+    }
+    Serial.println("###### End of calibration ######");
+#endif
 }
+
+#ifdef DEBUG_CALIBRATION
+/**
+* @brief Debug function
+* @retval None
+*/
+static void third_step_debugging(void) {
+    unsigned long strt_tm;
+    Serial.println("###### 3rd step: Verification ######");
+    for (uint8_t cnt = 0; cnt < 3; cnt++) {
+        Serial.println("\n###### Relax the hand ######");
+        /* indicating */
+        for (uint8_t i = 0; i < 8; i++) {
+            delay(100);
+            digitalWrite(RX_3_LED, 1);
+            digitalWrite(RX_4_LED, 1);
+            delay(100);
+            digitalWrite(RX_3_LED, 0);
+            digitalWrite(RX_4_LED, 0);   
+        }
+        /* delay for 4 sec */
+        strt_tm = millis();
+        while (millis() - strt_tm <= 4000) {
+            get_signals();
+            uart_flag = false;
+        }
+        // delay(4000);
+
+        /* waiting and printing the data from gd32 during DEBUG_WAITING ms */
+        strt_tm = millis();
+        while (millis() - strt_tm <= DEBUG_WAITING) {
+            while (!uart_flag) get_signals();
+            uart_flag = false;
+            for (uint8_t t = 0; t < 6; t++) {
+                Serial.print('D');
+                Serial.print(sensors[t]);
+                // if (t == 5) Serial.println();
+            }
+            mpu_data_processing();
+            gesture_recognizing();
+            Serial.print('G'); Serial.println(myData.w);
+        }
+
+        Serial.println("\n###### Show your fist! ######");
+        /* indicating */
+        for (uint8_t i = 0; i < 8; i++) {
+            delay(100);
+            digitalWrite(RX_3_LED, 1);
+            digitalWrite(RX_4_LED, 0);
+            delay(100);
+            digitalWrite(RX_3_LED, 0);
+            digitalWrite(RX_4_LED, 1);   
+        }
+        digitalWrite(RX_4_LED, 0);
+        /* delay for 4 sec */
+        strt_tm = millis();
+        while (millis() - strt_tm <= 4000) {
+            get_signals();
+            uart_flag = false;
+        }
+        // delay(4000);
+        /* waiting and printing the data from gd32 during DEBUG_WAITING ms */
+        strt_tm = millis();
+        while (millis() - strt_tm <= DEBUG_WAITING) {
+            while (!uart_flag) get_signals();
+            uart_flag = false;
+            for (uint8_t t = 0; t < 6; t++) {
+                Serial.print('D');
+                Serial.print(sensors[t]);
+                // if (t == 5) Serial.println();
+            }
+            mpu_data_processing();
+            gesture_recognizing();
+            Serial.print('G'); Serial.println(myData.w);
+        }
+    }
+    Serial.println("###### 3rd step was finished ######");
+}
+#endif
 
 /**
 * @brief Calibration procees of the bracelet
 * @retval None
 */
 void calibrating(void) {
+#ifdef DEBUG_CALIBRATION_TIME // Может, по кнопке переводить в разные режимы калибровки?
+    unsigned long calibration_start_time = millis();
+#endif
     /* resetting the gd32 and mpu */
     digitalWrite(RX_1_LED, 0);
     digitalWrite(ENABLE, 0);
@@ -357,14 +494,23 @@ void calibrating(void) {
     digitalWrite(ENABLE, 1);
     delay(10);
     mpu_init();
-
     /* getting resistance values */
     configuring_signals_levels();
-
     /* getting data for signals normalization */
     get_normalization_parameters();
     delay(50);
     send_to_gd32(NOMINAL_MODE, 0);
+#ifdef DEBUG_CALIBRATION
+    third_step_debugging();
+#elif defined(DEBUG_CALIBRATION_TIME)
+    Serial.print("###### Calibration overall time (in milliseconds): ");
+    unsigned long calibration_end_time = millis();
+    if (calibration_end_time < calibration_start_time) {
+        Serial.println(UINT_FAST32_MAX - calibration_start_time + calibration_end_time);
+    } else {
+        Serial.println(millis() - calibration_start_time);
+    } 
+#endif
 }
 
 /**
@@ -385,7 +531,6 @@ void change_mode_by_button(void) {
 
             if (f_btn_timing - f_btn_start_time >= SWITCH_CALIBRATING) {
                 f_btn_is_pressed = false;
-#ifdef AUTOTHRESHOLDING
                 calibrating();
                 switch (bracelet_mode) {
                     case 0:
@@ -401,7 +546,6 @@ void change_mode_by_button(void) {
                         digitalWrite(RX_4_LED, 1);
                         break;
                 }
-#endif
             }
         }
     } else if (f_btn_is_pressed) {
@@ -444,13 +588,26 @@ void check_switch_off_by_button(void) {
             }
             
             if (current_time - switch_off_start_time >= SWITCH_OFF_TIME) {
-                digitalWrite(RX_1_LED, 1);
-                digitalWrite(RX_3_LED, 1);
-                digitalWrite(RX_4_LED, 1);
+                uint8_t off_msg[6] = {DEVICE_ID, 0, 0, 0, 0, 0};
+                switch (bracelet_mode) {
+                    case 0:
+                        esp_now_send(broadcastAddress_pc, off_msg, sizeof(off_msg));
+                        break;
+                    case 1:
+                        esp_now_send(broadcastAddress_car, off_msg, sizeof(off_msg));
+                        break;
+                    case 2:
+                        esp_now_send(broadcastAddress_tank, off_msg, sizeof(off_msg));
+                        break;            
+                }
                 esp_deep_sleep_start();
             }
         }
     } else if (sw_off_is_pressed) {
+        uint8_t uav_command = 0x42;
+        esp_now_send(broadcastAddress_pc, &uav_command, 1);
+        // int uav_command[6] = {0x42, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        // esp_now_send(broadcastAddress_pc, (uint8_t *) &uav_command, sizeof(uav_command));
         sw_off_is_pressed = false;
     }
 }
@@ -604,13 +761,13 @@ void mpu_init(void) {
     int status = IMU.begin();
 
     if (status < 0) {
-        Serial.println("IMU initialization unsuccessful");
+        /*Serial.println("IMU initialization unsuccessful");
         Serial.println("Check IMU wiring or try cycling power");
         Serial.print("Status: ");
-        Serial.println(status);
+        Serial.println(status);*/
     } else {
-        Serial.print("MPU init status: ");
-        Serial.println(status);
+        // Serial.print("MPU init status: ");
+        // Serial.println(status);
         // setting the accelerometer full scale range to +/-2G
         IMU.setAccelRange(MPU9250::ACCEL_RANGE_2G);
         // setting the gyroscope full scale range to +/-500 deg/s

@@ -1,12 +1,12 @@
 #pragma once
 
-#define DEVICE_ID           2 // 2 - металлический ремешок or 3 - резиновый ремешок
+#define DEVICE_ID           2 // 2 - металлический ремешок or 3 - резиновый ремешок (белый)
 
 // #define MPU_TESTING
 // #define TEST_SIGNALS_READING
 // #define ANALOG_SIGNALS_PRINTING
-// #define THRESHOLD_DEBUG
-#define AUTOTHRESHOLDING
+// #define DEBUG_CALIBRATION
+// #define DEBUG_CALIBRATION_TIME
 
 /* Digital pins */
 #define F_BTN               GPIO_NUM_13 // falling
@@ -35,6 +35,9 @@ byte    31 - bin position of informative signal
 */
 #define EEPROM_SIZE         32
 
+#ifdef DEBUG_CALIBRATION
+#define DEBUG_WAITING       10000
+#endif
 #if (DEVICE_ID == 2)
 #define ACC_X_BIAS          0 // id2: -7
 #define ACC_Y_BIAS          0 // id2: 0??
