@@ -2,6 +2,7 @@
 
 #define DEVICE_ID           2 // 2 - металлический ремешок or 3 - резиновый ремешок (белый)
 
+#define AUTOTHRESHOLDING
 // #define MPU_TESTING
 // #define TEST_SIGNALS_READING
 // #define ANALOG_SIGNALS_PRINTING
