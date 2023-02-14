@@ -53,7 +53,7 @@ static ble_uuid_t m_adv_uuids[]          = {                                    
 
 /* bracelet main values */
 nrf_saadc_value_t bracelet_signals[] = {0, 0, 0, 0, 0, 0}; // array for saving sensors signal values
-//uint8_t bracelet_mode = 0;
+volatile bool is_connected = false;
 uint16_t signals_stage_1[] = {0, 0, 0, 0, 0, 0};
 uint16_t signals_stage_2[] = {0, 0, 0, 0, 0, 0};
 uint8_t sensors_idxs[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // indices of the signals that are used for gesture recognizing
@@ -77,6 +77,8 @@ volatile bool timer_0_flag = false;
 const nrf_drv_timer_t timer_0 = NRF_DRV_TIMER_INSTANCE(2);
 volatile bool timer_1_flag = false;
 const nrf_drv_timer_t timer_1 = NRF_DRV_TIMER_INSTANCE(1);
+volatile bool timer_2_flag = false;
+const nrf_drv_timer_t timer_2 = NRF_DRV_TIMER_INSTANCE(3);
 
 extern const nrf_drv_spi_t spi_inst;
 
@@ -117,18 +119,21 @@ int main(void) {
     imu_data.idx = DEVICE_ID | 0x34;
 #endif
     nrf_drv_timer_enable(&timer_0);
+    nrf_drv_timer_enable(&timer_2); // timer for sending accelerations
 
     while (1) {
         f_btn_processing();
         check_switch_off_by_button();
-        mpu_data_processing();
+        
+        if (is_connected) {
+            mpu_data_processing();
 #ifndef UAV_CONTROL
-        gesture_recognizing();
+            gesture_recognizing();
 #endif
 #if !defined(UAV_CONTROL) && !defined(PLATFORM_CONTROL)
-        inform_about_charge();
+            // inform_about_charge(); // TODO: it should be recommented for normal working!!
 #endif
-
+        }
 #ifdef ANALOG_IN_GET
         for (uint8_t i = 0; i < 4; i++) {
             nrfx_saadc_sample_convert(i, &signals[i]);
@@ -230,6 +235,15 @@ static void timers_init(void) {
 
     time_ticks = nrf_drv_timer_ms_to_ticks(&timer_0, time_ms);
     nrf_drv_timer_extended_compare(&timer_0, NRF_TIMER_CC_CHANNEL0, time_ticks, NRF_TIMER_SHORT_COMPARE0_CLEAR_MASK, true);
+
+    /* configuring the timer 2 */
+    time_ms = MPU_INFO_TIME; // time in miliseconds
+    nrf_drv_timer_config_t timer_2_cfg = NRF_DRV_TIMER_DEFAULT_CONFIG;
+    err_code = nrf_drv_timer_init(&timer_2, &timer_2_cfg, timer_2_event_handler);
+    APP_ERROR_CHECK(err_code);
+
+    time_ticks = nrf_drv_timer_ms_to_ticks(&timer_2, time_ms);
+    nrf_drv_timer_extended_compare(&timer_2, NRF_TIMER_CC_CHANNEL0, time_ticks, NRF_TIMER_SHORT_COMPARE0_CLEAR_MASK, true);
 }
 
 /**@brief Function for the GAP initialization
@@ -385,11 +399,15 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context) {
 
     switch (p_ble_evt->header.evt_id) {
         case BLE_GAP_EVT_CONNECTED:
+            is_connected = true;
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             APP_ERROR_CHECK(err_code);
+            err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_CONN, m_conn_handle, 4);
+            APP_ERROR_CHECK(err_code);
             break;
         case BLE_GAP_EVT_DISCONNECTED:
+            is_connected = false;
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
             break;
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
@@ -574,7 +592,7 @@ static void ad5206_write(uint8_t address, uint8_t value) {
                 break;
         }
         nrf_drv_spi_transfer(&spi_inst, &address, 1, NULL, 0);
-
+        nrf_delay_ms(10);
         /*switch (address) {
             case 2:
             case 3:
@@ -617,7 +635,7 @@ static void read_bracelet_values(void) {
     uint8_t resistance[] = {0, 0, 0, 0, 0, 0};
     uint8_t chosen_signals = 0;
 
-    nrf_delay_ms(500); // without this delay next lines don't work
+     wait_for_flash_ready(&fstorage);
 
     /* get the bracelet mode value */
     //rc = nrf_fstorage_read(&fstorage, 0x3f000, &tmp, sizeof(tmp));
@@ -931,6 +949,7 @@ void f_btn_processing(void) {
         }
     } else if (f_btn_is_pressed) {
         f_btn_is_pressed = false;
+        nrf_drv_timer_disable(&timer_1);
         //if (++bracelet_mode == 3) bracelet_mode = 0;
         //nrf_delay_ms(400);
 
@@ -976,6 +995,7 @@ void check_switch_off_by_button(void) {
 #endif
                 uint16_t output_arr_len = sizeof(imu_data);
                 ble_nus_data_send(&m_nus, (uint8_t *) &imu_data, &output_arr_len, m_conn_handle);
+		nrf_delay_ms(200);
 
                 nrf_gpio_pin_clear(OUT_MCP);
                 sd_power_system_off();
@@ -992,25 +1012,31 @@ void check_switch_off_by_button(void) {
 
 /**@brief Processing data obtained with the MPU */
 void mpu_data_processing(void) {
-    mpu_get_float_data(accelerations, g_speed);
+    if (timer_2_flag) {
+        timer_2_flag = false;
+        mpu_get_float_data(accelerations, g_speed);
 
-    imu_data.a_x = constrain(accelerations[0] * 102, -1000, 1000);
-    imu_data.a_y = constrain(accelerations[1] * 102, -1000, 1000);
-#if !defined(UAV_CONTROL) && !defined(PLATFORM_CONTROL)
-    /*imu_data.a_z = constrain(accelerations[2] * 102, -1000, 1000);
-    imu_data.w_x = g_speed[0] * 100; // TODO: 100 - is temporary variable
-    imu_data.w_y = g_speed[1] * 100; // TODO: 100 - is temporary variable
-    imu_data.w_y = g_speed[2] * 100; // TODO: 100 - is temporary variable*/
-#endif
+        imu_data.a_x = constrain(accelerations[0] * 102, -1000, 1000);
+        imu_data.a_y = constrain(accelerations[1] * 102, -1000, 1000);
+    #if !defined(UAV_CONTROL) && !defined(PLATFORM_CONTROL)
+        /*imu_data.a_z = constrain(accelerations[2] * 102, -1000, 1000);
+        imu_data.w_x = g_speed[0] * 100; // TODO: 100 - is temporary variable
+        imu_data.w_y = g_speed[1] * 100; // TODO: 100 - is temporary variable
+        imu_data.w_y = g_speed[2] * 100; // TODO: 100 - is temporary variable*/
+    #endif
 
-    uint16_t output_arr_len = sizeof(imu_data);
-    ble_nus_data_send(&m_nus, (uint8_t *) &imu_data, &output_arr_len, m_conn_handle);
-    nrf_delay_ms(50);
+        uint16_t output_arr_len = sizeof(imu_data);
+        ble_nus_data_send(&m_nus, (uint8_t *) &imu_data, &output_arr_len, m_conn_handle);
+
+        /* restarting the timer */
+        timer_2.p_reg -> TASKS_CLEAR = 1;
+        nrf_drv_timer_enable(&timer_2);
+    }
 }
 
 /**@brief Get the signals from sensors */
 void get_signals(void) {
-    // с бегущим средним
+    // with running avg filter
     if (++count_adc >= MEAS_VALUES) count_adc = 0;
 
     for (uint8_t i = 0; i < 6; i++) { /* i < 4 */
@@ -1059,6 +1085,7 @@ void gesture_recognizing(void) {
             uint16_t output_arr_len = 2;
             ble_nus_data_send(&m_nus, (uint8_t *) &switching_struct, &output_arr_len, m_conn_handle);
             nrf_gpio_pin_set(LED_1);
+            nrf_delay_ms(200);
         }
     } else if (is_gesture_defined) {
         is_gesture_defined = false;
@@ -1066,6 +1093,7 @@ void gesture_recognizing(void) {
         uint16_t output_arr_len = 2;
         ble_nus_data_send(&m_nus, (uint8_t *) &switching_struct, &output_arr_len, m_conn_handle);
         nrf_gpio_pin_clear(LED_1);
+        nrf_delay_ms(200);
     }
 }
 
@@ -1092,7 +1120,7 @@ void inform_about_charge(void) {
     }
 }
 
-/**@brief Handler for timer events */
+/**@brief Handler for timer_0 events */
 void timer_0_event_handler(nrf_timer_event_t event_type, void* p_context) {
     switch (event_type) {
         case NRF_TIMER_EVENT_COMPARE0:
@@ -1102,12 +1130,22 @@ void timer_0_event_handler(nrf_timer_event_t event_type, void* p_context) {
     }
 }
 
-/**@brief Handler for timer events */
+/**@brief Handler for timer_1 events */
 void timer_1_event_handler(nrf_timer_event_t event_type, void* p_context) {
     switch (event_type) {
         case NRF_TIMER_EVENT_COMPARE0:
             timer_1_flag = true;
             nrf_drv_timer_disable(&timer_1);
+            break;
+    }
+}
+
+/**@brief Handler for timer_2 events */
+void timer_2_event_handler(nrf_timer_event_t event_type, void* p_context) {
+    switch (event_type) {
+        case NRF_TIMER_EVENT_COMPARE0:
+            timer_2_flag = true;
+            nrf_drv_timer_disable(&timer_2);
             break;
     }
 }

@@ -16,7 +16,6 @@
   <ProjectSessionItem path="bracelet_nrf;bracelet_nrf;Application"/>
   <ProjectSessionItem path="bracelet_nrf;bracelet_nrf;mpu_lib"/>
   <ProjectSessionItem path="bracelet_nrf;bracelet_nrf;nRF_Drivers"/>
-  <ProjectSessionItem path="bracelet_nrf;bracelet_nrf;nRF_Libraries"/>
  </Project>
  <Register1/>
  <Register2/>
@@ -41,8 +40,8 @@
   <Watches active="0" update="Never"/>
  </Watch4>
  <Files>
-  <SessionOpenFile windowGroup="DockEditLeft" x="29" y="729" useTextEdit="1" openedFrom="" useBinaryEdit="0" left="0" path="../../../main.c" selected="1" top="713" codecName="Default"/>
-  <SessionOpenFile windowGroup="DockEditLeft" x="2" y="36" useTextEdit="1" openedFrom="E:/nrf_SDK/examples/spiiras_workspace/bracelet_nrf/main.c" useBinaryEdit="0" left="0" path="../../../bracelet_cfg.h" selected="0" top="0" codecName="Default"/>
+  <SessionOpenFile windowGroup="DockEditLeft" x="26" y="146" useTextEdit="1" openedFrom="" useBinaryEdit="0" left="0" path="../../../main.c" selected="1" top="111" codecName="Default"/>
+  <SessionOpenFile windowGroup="DockEditLeft" x="32" y="33" useTextEdit="1" openedFrom="" useBinaryEdit="0" left="0" path="../../../bracelet_cfg.h" selected="0" top="39" codecName="Default"/>
  </Files>
  <ARMCrossStudioWindow activeProject="bracelet_nrf" fileDialogDefaultFilter="*.c" autoConnectTarget="J-Link" buildConfiguration="Release" sessionSettings="" debugSearchFileMap="" fileDialogInitialDirectory="E:/nrf_SDK/modules/nrfx/drivers/src" debugSearchPath="" autoConnectCapabilities="3199"/>
 </session>

@@ -37,12 +37,13 @@ typedef struct {
 //#define CALIBRATION_DEBUGGING
 
 #define DEVICE_ID                      LEFT_BRACELET
-#define MEAS_VALUES                    8 // must be the power of 2!
+#define MEAS_VALUES                    16 // must be the power of 2!
 #define CHARGE_INFO_TIME               10000
+#define MPU_INFO_TIME                  200
 #define SWITCH_OFF_CALIBRATING         3000
 #define CALIBR_VALUE                   1000 // TODO: this value should be replaced!!  1000
 #define MIN_DIFFERENCE                 100 // TODO: this value should be replaced!!
-#define THRESHOLD_VALUE                0.6
+#define THRESHOLD_VALUE                0.7
 #define OVERFLOW_VAL                   ((uint32_t)(0xFFFFFFFF/16.384))
 #define constrain(amt,low,high) ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)))
 #define max(val_0, val_1) ((val_0) < (val_1) ? val_1 : val_0)
@@ -64,7 +65,7 @@ typedef struct {
 /* BLE configurations */
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
-#define DEVICE_NAME                     "LARS_Bracelet"                             /**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "Bracelet_1"                             /**< Name of device. Will be included in the advertising data. */
 #define NUS_SERVICE_UUID_TYPE           BLE_UUID_TYPE_VENDOR_BEGIN                  /**< UUID type for the Nordic UART Service (vendor specific). */
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
@@ -125,3 +126,4 @@ static void get_save_calibration_values(void);
 void get_normalization_parameters(void);
 void timer_0_event_handler(nrf_timer_event_t event_type, void* p_context);
 void timer_1_event_handler(nrf_timer_event_t event_type, void* p_context);
+void timer_2_event_handler(nrf_timer_event_t event_type, void* p_context);
