@@ -5,11 +5,6 @@ typedef enum {
     CHOSEN_SIGNALS
 } save_cases_e;
 
-typedef enum {
-    LEFT_BRACELET,
-    RIGHT_BRACELET
-} left_right_device_e;
-
 typedef struct {
     uint8_t idx;
     int16_t a_x;
@@ -36,15 +31,13 @@ typedef struct {
 #define PLATFORM_CONTROL
 //#define CALIBRATION_DEBUGGING
 
-#define DEVICE_ID                      LEFT_BRACELET
 #define MEAS_VALUES                    16 // must be the power of 2!
 #define CHARGE_INFO_TIME               10000
-#define MPU_INFO_TIME                  200
+#define MPU_INFO_TIME                  100
 #define SWITCH_OFF_CALIBRATING         3000
-#define CALIBR_VALUE                   1000 // TODO: this value should be replaced!!  1000
+#define CALIBR_VALUE                   5000 // TODO: this value should be replaced!!  1000
 #define MIN_DIFFERENCE                 100 // TODO: this value should be replaced!!
-#define THRESHOLD_VALUE                0.7
-#define OVERFLOW_VAL                   ((uint32_t)(0xFFFFFFFF/16.384))
+#define THRESHOLD_VALUE                0.8
 #define constrain(amt,low,high) ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)))
 #define max(val_0, val_1) ((val_0) < (val_1) ? val_1 : val_0)
 #define min(val_0, val_1) ((val_0) > (val_1) ? val_1 : val_0)
@@ -55,7 +48,8 @@ typedef struct {
 #define LED_2                          8 // green
 #define OUT_MCP                        23
 #define V_S_S                          24
-#define AD5206_CS                      26
+#define AD5206_CS                      11
+#define PWM_OUT                        13
 
 /* DIGITAL INPUTS */
 #define MC_DIN                         22
@@ -65,7 +59,7 @@ typedef struct {
 /* BLE configurations */
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
-#define DEVICE_NAME                     "Bracelet_1"                             /**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "LARS_Bracelet"                                /**< Name of device. Will be included in the advertising data. */
 #define NUS_SERVICE_UUID_TYPE           BLE_UUID_TYPE_VENDOR_BEGIN                  /**< UUID type for the Nordic UART Service (vendor specific). */
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */

@@ -60,18 +60,21 @@ uint8_t sensors_idxs[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // indices of th
 uint16_t diffs[6];
 float accelerations[3] = {0.0f, 0.0f, 0.0f};
 float g_speed[3] = {0.0f, 0.0f, 0.0f};
+nrf_saadc_value_t battery_voltage = 0x3FFF;
 volatile bool f_btn_is_pressed = false; // calibration/switch mode button flag
 uint32_t f_btn_start_time = 0; // for keeping time the start from pressed button (calibration/switch mode)
 volatile bool sw_off_is_pressed = false; // button flag, it is connected with switching off the bracelet
 imu_data_s imu_data; // structure for transmitting mpu data
 gesture_and_buttons_s switching_struct; // structure for transmitting info about gesture and buttons states
 volatile bool is_gesture_defined = false;
-charge_state_s charge = {DEVICE_ID | 0x50, 0}; // struct with message about battery charge
+charge_state_s charge = {0x50, 0}; // struct with message about battery charge
+
 /* For filter */
 uint8_t filter_shift = log2(MEAS_VALUES);
 int16_t adc_prev[6][MEAS_VALUES];
 uint32_t adc_sum[6];
 volatile uint8_t count_adc = 0;
+
 /* timer stuff */
 volatile bool timer_0_flag = false;
 const nrf_drv_timer_t timer_0 = NRF_DRV_TIMER_INSTANCE(2);
@@ -112,38 +115,27 @@ int main(void) {
     rc = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_ADV, m_advertising.adv_handle, 4);
     APP_ERROR_CHECK(rc);
 
-    switching_struct.idx = DEVICE_ID | 0x90;
-#if defined(UAV_CONTROL) || defined (PLATFORM_CONTROL)
-    imu_data.idx = DEVICE_ID | 0x30;
-#else
-    imu_data.idx = DEVICE_ID | 0x34;
-#endif
-    nrf_drv_timer_enable(&timer_0);
+    switching_struct.idx = 0x90;
+    imu_data.idx = 0x30;
+
+    /* setting only one coefficient to all potentiometer channels */
+    for (uint8_t cnt = 0; cnt < 6; cnt++) {
+        ad5206_write(cnt, 32);
+        nrf_delay_ms(50);
+    }
+
+    nrf_drv_timer_enable(&timer_0); // timer for sending the battery level 
     nrf_drv_timer_enable(&timer_2); // timer for sending accelerations
 
     while (1) {
         f_btn_processing();
         check_switch_off_by_button();
-        
+
         if (is_connected) {
             mpu_data_processing();
-#ifndef UAV_CONTROL
             gesture_recognizing();
-#endif
-#if !defined(UAV_CONTROL) && !defined(PLATFORM_CONTROL)
-            // inform_about_charge(); // TODO: it should be recommented for normal working!!
-#endif
+            inform_about_charge();
         }
-#ifdef ANALOG_IN_GET
-        for (uint8_t i = 0; i < 4; i++) {
-            nrfx_saadc_sample_convert(i, &signals[i]);
-        }
-
-        sprintf((char *) ble_output_array, "%d %d %d %d", signals[0], signals[1], signals[2], signals[3]);
-        uint16_t output_arr_len = strlen(ble_output_array);
-        ble_nus_data_send(&m_nus, ble_output_array, &output_arr_len, m_conn_handle);
-        nrf_delay_ms(500);
-#endif
     }
 }
 
@@ -187,15 +179,17 @@ static void saadc_init(void) {
     nrf_saadc_channel_config_t ch_cfg_1 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN1); // p0.03
     nrf_saadc_channel_config_t ch_cfg_2 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN2); // p0.04
     nrf_saadc_channel_config_t ch_cfg_3 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN3); // p0.05
-    nrf_saadc_channel_config_t battery_vltg_cfg = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN3); // p0.28
+    nrf_saadc_channel_config_t ch_cfg_4 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN5); // p0.29
+    nrf_saadc_channel_config_t ch_cfg_5 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN6); // p0.30
+    nrf_saadc_channel_config_t battery_vltg_cfg = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN4); // p0.28
 
     nrf_drv_saadc_init(NULL, saadc_callback_handler);
     nrfx_saadc_channel_init(0, &ch_cfg_0);
     nrfx_saadc_channel_init(1, &ch_cfg_1);
     nrfx_saadc_channel_init(2, &ch_cfg_2);
     nrfx_saadc_channel_init(3, &ch_cfg_3);
-    // + channel 4
-    // + channel 5
+    nrfx_saadc_channel_init(4, &ch_cfg_4);
+    nrfx_saadc_channel_init(5, &ch_cfg_5);
     nrfx_saadc_channel_init(6, &battery_vltg_cfg);
 }
 
@@ -530,7 +524,7 @@ static void advertising_start(void) {
 /**@brief Initialization the mpu module */
 static void gyroscope_accelerometer_init(void) {
     nrf_delay_ms(500); // delay is necessary for mpu initialization
-    if (mpu_init(29, 30, 31, 27)) {
+    if (mpu_init(26, 27, 31, 12)) {
         while (1) {
             nrf_gpio_pin_set(LED_1);
             nrf_delay_ms(200);
@@ -549,6 +543,7 @@ static void digital_pins_init(void) {
     nrf_gpio_cfg_output(LED_2);
     nrf_gpio_cfg_output(V_S_S);
     nrf_gpio_cfg_output(AD5206_CS);
+    nrf_gpio_cfg_output(PWM_OUT);
     nrf_gpio_pin_set(AD5206_CS);
 
     nrf_gpio_cfg_input(MC_DIN, NRF_GPIO_PIN_NOPULL);
@@ -567,41 +562,31 @@ static void digital_pins_init(void) {
 static void ad5206_write(uint8_t address, uint8_t value) {
     if ((value <= 255) && (value >= 0) && (address < 6)) {
         nrf_gpio_pin_clear(AD5206_CS);
-        nrf_delay_ms(10); // TODO: there was 50 ms!!!!
+        nrf_delay_ms(5); // waiting for ending the transition process
 
         switch (address) {
             case 0: // 3
                 address = 3;
-                value = 255 - value;
                 break;
             case 1: // 1
                 break;
             case 2: // 4
                 address = 4;
-                value = 255 - value;
                 break;
             case 3: // 5
                 address = 5;
                 break;
-            case 4: // 0 - it doesn't work
+            case 4: // 0
                 address = 0;
                 break;
-            case 5: // 2 - it doesn't work
+            case 5: // 2
                 address = 2;
-                value = 255 - value;
                 break;
         }
         nrf_drv_spi_transfer(&spi_inst, &address, 1, NULL, 0);
-        nrf_delay_ms(10);
-        /*switch (address) {
-            case 2:
-            case 3:
-            case 4:
-                value = 255 - value;
-                break;
-        }*/
+        nrf_delay_ms(10); // waiting for data transmitioning
         nrf_drv_spi_transfer(&spi_inst, &value, 1, NULL, 0);
-        nrf_delay_ms(10);
+        nrf_delay_ms(10); // waiting for data transmitioning
         nrf_gpio_pin_set(AD5206_CS);
     }
 }
@@ -615,13 +600,11 @@ static void save_resistance_values(uint8_t *obj_ptr) {
     rc = nrf_fstorage_write(&fstorage, 0x3f004, &tmp, sizeof(tmp), NULL);
     APP_ERROR_CHECK(rc);
     wait_for_flash_ready(&fstorage);
-    //nrf_delay_ms(50);
 
     tmp = 0;
     tmp = (uint32_t)obj_ptr[4] | ((uint32_t)obj_ptr[5] << 8);
     rc = nrf_fstorage_write(&fstorage, 0x3f008, &tmp, sizeof(tmp), NULL);
     APP_ERROR_CHECK(rc);
-    //nrf_delay_ms(50);
     wait_for_flash_ready(&fstorage);
 
 }
@@ -636,12 +619,6 @@ static void read_bracelet_values(void) {
     uint8_t chosen_signals = 0;
 
      wait_for_flash_ready(&fstorage);
-
-    /* get the bracelet mode value */
-    //rc = nrf_fstorage_read(&fstorage, 0x3f000, &tmp, sizeof(tmp));
-    //APP_ERROR_CHECK(rc);
-    //wait_for_flash_ready(&fstorage);
-    //bracelet_mode = tmp;
 
     /* get the chosen signals value */    
     tmp = 0;
@@ -658,32 +635,33 @@ static void read_bracelet_values(void) {
     ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
 #endif
 
+    // TODO: there are important lines below!!
     /* get the resistance values */
-    tmp = 0;
-    rc = nrf_fstorage_read(&fstorage, 0x3f004, &tmp, sizeof(tmp));
-    APP_ERROR_CHECK(rc);
-    wait_for_flash_ready(&fstorage);
-    resistance[0] = tmp;
-    resistance[1] = tmp >> 8;
-    resistance[2] = tmp >> 16;
-    resistance[3] = tmp >> 24;
-    tmp = 0;
-    rc = nrf_fstorage_read(&fstorage, 0x3f008, &tmp, sizeof(tmp));
-    APP_ERROR_CHECK(rc);
-    wait_for_flash_ready(&fstorage);
-    resistance[4] = tmp;
-    resistance[5] = tmp >> 8;
+//    tmp = 0;
+//    rc = nrf_fstorage_read(&fstorage, 0x3f004, &tmp, sizeof(tmp));
+//    APP_ERROR_CHECK(rc);
+//    wait_for_flash_ready(&fstorage);
+//    resistance[0] = tmp;
+//    resistance[1] = tmp >> 8;
+//    resistance[2] = tmp >> 16;
+//    resistance[3] = tmp >> 24;
+//    tmp = 0;
+//    rc = nrf_fstorage_read(&fstorage, 0x3f008, &tmp, sizeof(tmp));
+//    APP_ERROR_CHECK(rc);
+//    wait_for_flash_ready(&fstorage);
+//    resistance[4] = tmp;
+//    resistance[5] = tmp >> 8;
 
-#ifdef CALIBRATION_DEBUGGING
-    sprintf(ble_buf, "%d %d %d %d\n", resistance[0], resistance[1], resistance[2], resistance[3]);
-    output_arr_len = sizeof(ble_buf);
-    ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
-#endif
+//#ifdef CALIBRATION_DEBUGGING
+//    sprintf(ble_buf, "%d %d %d %d\n", resistance[0], resistance[1], resistance[2], resistance[3]);
+//    output_arr_len = sizeof(ble_buf);
+//    ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
+//#endif
 
-    /* set the resistance values for each channel */
+//    /* set the resistance values for each channel */
     for (uint8_t i = 0; i < 6; i++) {
-        ad5206_write(i, resistance[i]);
-        nrf_delay_ms(50);
+        //ad5206_write(i, resistance[i]);
+        //nrf_delay_ms(50);
 
         if (chosen_signals & 0x01) {
             sensors_idxs[idxs_sig_pos] = i;
@@ -716,10 +694,10 @@ static void read_bracelet_values(void) {
     }
 
 #ifdef CALIBRATION_DEBUGGING
-    sprintf(ble_buf, "%d %d %d %d\n", signals_stage_1[0], signals_stage_1[1], signals_stage_1[2], signals_stage_1[3]);
+    sprintf(ble_buf, "%d %d %d %d %d %d\n", signals_stage_1[0], signals_stage_1[1], signals_stage_1[2], signals_stage_1[3], signals_stage_1[4], signals_stage_1[5]);
     output_arr_len = sizeof(ble_buf);
     ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
-    sprintf(ble_buf, "%d %d %d %d\n", signals_stage_2[0], signals_stage_2[1], signals_stage_2[2], signals_stage_2[3]);
+    sprintf(ble_buf, "%d %d %d %d %d %d\n", signals_stage_2[0], signals_stage_2[1], signals_stage_2[2], signals_stage_2[3], signals_stage_2[4], signals_stage_2[5]);
     output_arr_len = sizeof(ble_buf);
     ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
 #endif
@@ -742,54 +720,57 @@ void configuring_signals_levels(void) {
     nrf_delay_ms(1000);
     nrf_gpio_pin_set(LED_2);
 
-    for (uint8_t tmp_val = 255; tmp_val > 0; tmp_val -= 5) {
-        for (uint8_t j = 0; j < 6; j++) {
-            ad5206_write(j, tmp_val);
-            nrf_delay_ms(50);
-        }
+// TODO: there are important lines below!!
+//    for (uint8_t tmp_val = 255; tmp_val > 0; tmp_val -= 10) {
+//        for (uint8_t j = 0; j < 6; j++) {
+//            ad5206_write(j, tmp_val);
+//            nrf_delay_ms(50);
+//        }
 
-        /* waiting for filtering the data */
-        for (uint8_t k = 0; k < MEAS_VALUES; k++) {
-            get_signals();
-            nrf_delay_ms(5);
-        }
+//        /* waiting for filtering the data */
+//        for (uint8_t k = 0; k < MEAS_VALUES; k++) {
+//            get_signals();
+//            nrf_delay_ms(5);
+//        }
 
-        /* checking the values */
-        for (uint8_t j = 0; j < 6; j++) {
-            if ((bracelet_signals[j] <= CALIBR_VALUE) && !got_coeff[j]) {
-                got_coeff[j] = true;
-                tmp_coeffs[j] = tmp_val;
-            }
-        }
-        if (got_coeff[0] & got_coeff[1] & got_coeff[2] & got_coeff[3] /*& got_coeff[4] & got_coeff[5]*/) {
-            nrf_gpio_pin_clear(LED_2);
-            break;
-        }
+//        /* checking the values */
+//        for (uint8_t j = 0; j < 6; j++) {
+//            if ((bracelet_signals[j] <= CALIBR_VALUE) && !got_coeff[j]) {
+//                got_coeff[j] = true;
+//                tmp_coeffs[j] = tmp_val;
+//            }
+//        }
 
-        led_tmp = (led_tmp) ? false : true;
-        if (led_tmp) {
-            nrf_gpio_pin_set(LED_2);
-        } else {
-            nrf_gpio_pin_clear(LED_2);
-        }
+//        if (got_coeff[0] & got_coeff[1] & got_coeff[2] & got_coeff[3] & got_coeff[4] & got_coeff[5]) break;
 
-    }
-    nrf_gpio_pin_clear(LED_2);
+//        led_tmp = (led_tmp) ? false : true;
+//        if (led_tmp) {
+//            nrf_gpio_pin_set(LED_2);
+//        } else {
+//            nrf_gpio_pin_clear(LED_2);
+//        }
 
-#ifdef CALIBRATION_DEBUGGING
-    char ble_buf[50];
-    sprintf(ble_buf, "%d %d %d %d\n", tmp_coeffs[0], tmp_coeffs[1], tmp_coeffs[2], tmp_coeffs[3]);
-    uint16_t output_arr_len = sizeof(ble_buf);
-    ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
-#endif
+//    }
+//    nrf_gpio_pin_clear(LED_2);
 
-    save_resistance_values(tmp_coeffs);
+//    if (!(got_coeff[0] & got_coeff[1] & got_coeff[2] & got_coeff[3] & got_coeff[4] & got_coeff[5])) {
+//        for (uint8_t i = 0; i < 6; i++) if (!got_coeff[i]) tmp_coeffs[i] = 10; 
+//    }
 
-    /* restoring found resistance values */
-    for (uint8_t i = 0; i < 6; i++) {
-        ad5206_write(i, tmp_coeffs[i]);
-        nrf_delay_ms(50);
-    }
+//#ifdef CALIBRATION_DEBUGGING
+//    char ble_buf[50];
+//    sprintf(ble_buf, "%d %d %d %d\n", tmp_coeffs[0], tmp_coeffs[1], tmp_coeffs[2], tmp_coeffs[3]);
+//    uint16_t output_arr_len = sizeof(ble_buf);
+//    ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
+//#endif
+
+//    save_resistance_values(tmp_coeffs);
+
+//    /* restoring found resistance values */
+//    for (uint8_t i = 0; i < 6; i++) {
+//        ad5206_write(i, tmp_coeffs[i]);
+//        nrf_delay_ms(50);
+//    }
 }
 
 /**@brief Function for calculating and saving calibration values
@@ -851,21 +832,19 @@ static void get_save_calibration_values(void) {
         APP_ERROR_CHECK(rc);
         tmp_addr_stage_1 += 4;
         wait_for_flash_ready(&fstorage);
-        //nrf_delay_ms(50);
 
         tmp = signals_stage_2[i] | ((uint32_t)signals_stage_2[i + 1] << 16);
         rc = nrf_fstorage_write(&fstorage, tmp_addr_stage_2, &tmp, sizeof(tmp), NULL);
         APP_ERROR_CHECK(rc);
         tmp_addr_stage_2 += 4;
         wait_for_flash_ready(&fstorage);
-        //nrf_delay_ms(50);
     }
 #ifdef CALIBRATION_DEBUGGING
     char ble_buf[50];
-    sprintf(ble_buf, "%d %d %d %d\n", signals_stage_1[0], signals_stage_1[1], signals_stage_1[2], signals_stage_1[3]);
+    sprintf(ble_buf, "%d %d %d %d %d %d\n", signals_stage_1[0], signals_stage_1[1], signals_stage_1[2], signals_stage_1[3], signals_stage_1[4], signals_stage_1[5]);
     uint16_t output_arr_len = sizeof(ble_buf);
     ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
-    sprintf(ble_buf, "%d %d %d %d\n", signals_stage_2[0], signals_stage_2[1], signals_stage_2[2], signals_stage_2[3]);
+    sprintf(ble_buf, "%d %d %d %d %d %d\n", signals_stage_2[0], signals_stage_2[1], signals_stage_2[2], signals_stage_2[3], signals_stage_2[4], signals_stage_2[5]);
     output_arr_len = sizeof(ble_buf);
     ble_nus_data_send(&m_nus, (uint8_t *) &ble_buf, &output_arr_len, m_conn_handle);
 
@@ -879,7 +858,7 @@ static void get_save_calibration_values(void) {
     rc = nrf_fstorage_write(&fstorage, 0x3f024, &tmp, sizeof(tmp), NULL);
     APP_ERROR_CHECK(rc);
     wait_for_flash_ready(&fstorage);
-    //nrf_delay_ms(50);
+    //nrf_delay_ms(50);/**********************************************************************************/
 }
 
 /**@brief Calculating the normalization coefficients and writing them with fstorage */
@@ -950,16 +929,6 @@ void f_btn_processing(void) {
     } else if (f_btn_is_pressed) {
         f_btn_is_pressed = false;
         nrf_drv_timer_disable(&timer_1);
-        //if (++bracelet_mode == 3) bracelet_mode = 0;
-        //nrf_delay_ms(400);
-
-        ///* save new mode */
-        //ret_code_t rc;
-        //uint32_t tmp = bracelet_mode;
-        //rc = nrf_fstorage_write(&fstorage, 0x3f000, &tmp, sizeof(tmp), NULL);
-        //APP_ERROR_CHECK(rc);
-        //wait_for_flash_ready(&fstorage);
-        //nrf_delay_ms(50);
 
         switching_struct.gestures_buttons = 0x02;
         /*uint16_t output_arr_len = 2;
@@ -987,15 +956,15 @@ void check_switch_off_by_button(void) {
                 /* sending zero data */
                 imu_data.a_x = 0;
                 imu_data.a_y = 0;
-#if !defined(UAV_CONTROL) && !defined(PLATFORM_CONTROL)
-                imu_data.a_z = constrain(accelerations[2] * 102, -1000, 1000);
+
+                /*imu_data.a_z = constrain(accelerations[2] * 102, -1000, 1000);
                 imu_data.w_x = g_speed[0] * 100; // TODO: 100 - is temporary variable
                 imu_data.w_y = g_speed[1] * 100; // TODO: 100 - is temporary variable
-                imu_data.w_y = g_speed[2] * 100; // TODO: 100 - is temporary variable
-#endif
+                imu_data.w_y = g_speed[2] * 100; // TODO: 100 - is temporary variable*/
+
                 uint16_t output_arr_len = sizeof(imu_data);
                 ble_nus_data_send(&m_nus, (uint8_t *) &imu_data, &output_arr_len, m_conn_handle);
-		nrf_delay_ms(200);
+                nrf_delay_ms(200);
 
                 nrf_gpio_pin_clear(OUT_MCP);
                 sd_power_system_off();
@@ -1018,12 +987,11 @@ void mpu_data_processing(void) {
 
         imu_data.a_x = constrain(accelerations[0] * 102, -1000, 1000);
         imu_data.a_y = constrain(accelerations[1] * 102, -1000, 1000);
-    #if !defined(UAV_CONTROL) && !defined(PLATFORM_CONTROL)
+
         /*imu_data.a_z = constrain(accelerations[2] * 102, -1000, 1000);
         imu_data.w_x = g_speed[0] * 100; // TODO: 100 - is temporary variable
         imu_data.w_y = g_speed[1] * 100; // TODO: 100 - is temporary variable
         imu_data.w_y = g_speed[2] * 100; // TODO: 100 - is temporary variable*/
-    #endif
 
         uint16_t output_arr_len = sizeof(imu_data);
         ble_nus_data_send(&m_nus, (uint8_t *) &imu_data, &output_arr_len, m_conn_handle);
@@ -1031,15 +999,15 @@ void mpu_data_processing(void) {
         /* restarting the timer */
         timer_2.p_reg -> TASKS_CLEAR = 1;
         nrf_drv_timer_enable(&timer_2);
-    }
+   }
 }
 
 /**@brief Get the signals from sensors */
 void get_signals(void) {
-    // with running avg filter
+    // filter - running avg
     if (++count_adc >= MEAS_VALUES) count_adc = 0;
 
-    for (uint8_t i = 0; i < 6; i++) { /* i < 4 */
+    for (uint8_t i = 0; i < 6; i++) {
         nrfx_saadc_sample_convert(i, &bracelet_signals[i]);
         bracelet_signals[i] = constrain(bracelet_signals[i], 0, 0x3FFF);
 
@@ -1085,7 +1053,6 @@ void gesture_recognizing(void) {
             uint16_t output_arr_len = 2;
             ble_nus_data_send(&m_nus, (uint8_t *) &switching_struct, &output_arr_len, m_conn_handle);
             nrf_gpio_pin_set(LED_1);
-            nrf_delay_ms(200);
         }
     } else if (is_gesture_defined) {
         is_gesture_defined = false;
@@ -1093,17 +1060,27 @@ void gesture_recognizing(void) {
         uint16_t output_arr_len = 2;
         ble_nus_data_send(&m_nus, (uint8_t *) &switching_struct, &output_arr_len, m_conn_handle);
         nrf_gpio_pin_clear(LED_1);
-        nrf_delay_ms(200);
     }
 }
 
 /**@brief Calculating percentage of the charge */
 uint8_t get_charge(void) {
     nrf_saadc_value_t tmp_vltg;
+    uint8_t vtg;
+
     nrf_gpio_pin_set(V_S_S);
     nrf_delay_ms(5);
     nrfx_saadc_sample_convert(6, &tmp_vltg);
-    uint8_t vtg = (constrain(tmp_vltg, 0, 0x3FFF) - 2052) / 4.26; // TODO: find coefficient!!
+    if (tmp_vltg < 0) tmp_vltg = 9200;
+
+    if (nrf_gpio_pin_input_get(CHRG) && (tmp_vltg <= battery_voltage)) { // if there is NO charging process
+        battery_voltage = tmp_vltg;
+    } else if (!nrf_gpio_pin_input_get(CHRG) && (tmp_vltg > battery_voltage)) { // if there IS charging process
+        battery_voltage = tmp_vltg;
+    }
+
+    battery_voltage = constrain(battery_voltage, 9200, 13820);
+    vtg = (float)(battery_voltage - 9200) * 0.02057 + 5;
     nrf_gpio_pin_clear(V_S_S);
     if (vtg > 100) vtg = 100;
     return vtg; 
@@ -1120,7 +1097,7 @@ void inform_about_charge(void) {
     }
 }
 
-/**@brief Handler for timer_0 events */
+/**@brief Handler for timer 0 events */
 void timer_0_event_handler(nrf_timer_event_t event_type, void* p_context) {
     switch (event_type) {
         case NRF_TIMER_EVENT_COMPARE0:
@@ -1130,7 +1107,7 @@ void timer_0_event_handler(nrf_timer_event_t event_type, void* p_context) {
     }
 }
 
-/**@brief Handler for timer_1 events */
+/**@brief Handler for timer 1 events */
 void timer_1_event_handler(nrf_timer_event_t event_type, void* p_context) {
     switch (event_type) {
         case NRF_TIMER_EVENT_COMPARE0:
@@ -1140,7 +1117,7 @@ void timer_1_event_handler(nrf_timer_event_t event_type, void* p_context) {
     }
 }
 
-/**@brief Handler for timer_2 events */
+/**@brief Handler for timer 2 events */
 void timer_2_event_handler(nrf_timer_event_t event_type, void* p_context) {
     switch (event_type) {
         case NRF_TIMER_EVENT_COMPARE0:
